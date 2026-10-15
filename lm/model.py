@@ -19,8 +19,9 @@ class Linear(nn.Module):
         self.weight = nn.Parameter(torch.empty(out_features, in_features))
         
         # Inizializzazione Truncated Normal
-        std = math.sqrt(2.0 / (in_features + out_features))
-        nn.init.trunc_normal_(self.weight, mean=0.0, std=std, a=-3*std, b=3*std)
+        if self.weight.device.type != 'meta':
+            std = math.sqrt(2.0 / (in_features + out_features))
+            nn.init.trunc_normal_(self.weight, mean=0.0, std=std, a=-3*std, b=3*std)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return torch.einsum("...i, oi -> ...o", x, self.weight)
@@ -36,7 +37,9 @@ class Embedding(nn.Module):
         self.embedding_dim = embedding_dim
         
         self.weight = nn.Parameter(torch.empty(num_embeddings, embedding_dim))
-        nn.init.trunc_normal_(self.weight, mean=0.0, std=1.0, a=-3.0, b=3.0)
+
+        if self.weight.device.type != 'meta':
+            nn.init.trunc_normal_(self.weight, mean=0.0, std=1.0, a=-3.0, b=3.0)
 
     def forward(self, ids: torch.Tensor) -> torch.Tensor:
         return self.weight[ids]
@@ -228,7 +231,14 @@ class TransformerLM(nn.Module):
 
 def count_params(model: nn.Module) -> int:
     """Conta i parametri addestrabili totali del modello."""
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    
+    # AGGIUNTA: Se i pesi di embedding e output sono condivisi (tied), li contiamo una volta sola
+    if hasattr(model, 'output_head') and hasattr(model, 'tok_embeddings'):
+        if model.output_head.weight is model.tok_embeddings.weight:
+            total -= model.output_head.weight.numel()
+            
+    return total
 
 
 def count_flops(config: dict, seq_len: int) -> tuple[int, int]:
