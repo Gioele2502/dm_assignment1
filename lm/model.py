@@ -15,10 +15,14 @@ class Linear(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         
-        # Matrice dei pesi con convenzione W in R^(d_out x d_in)
-        self.weight = nn.Parameter(torch.empty(out_features, in_features))
+        # Salvavita per modelli enormi (es. Llama-3 cfg1): se supera la soglia, usa 'meta' per non esaurire la RAM
+        num_params = in_features * out_features
+        device = 'meta' if num_params > 15_000_000 else None
         
-        # Inizializzazione Truncated Normal
+        # Matrice dei pesi con convenzione W in R^(d_out x d_in)
+        self.weight = nn.Parameter(torch.empty(out_features, in_features, device=device))
+        
+        # Inizializzazione Truncated Normal (eseguita solo se non siamo su 'meta')
         if self.weight.device.type != 'meta':
             std = math.sqrt(2.0 / (in_features + out_features))
             nn.init.trunc_normal_(self.weight, mean=0.0, std=std, a=-3*std, b=3*std)
@@ -36,7 +40,10 @@ class Embedding(nn.Module):
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
         
-        self.weight = nn.Parameter(torch.empty(num_embeddings, embedding_dim))
+        num_params = num_embeddings * embedding_dim
+        device = 'meta' if num_params > 15_000_000 else None
+        
+        self.weight = nn.Parameter(torch.empty(num_embeddings, embedding_dim, device=device))
 
         if self.weight.device.type != 'meta':
             nn.init.trunc_normal_(self.weight, mean=0.0, std=1.0, a=-3.0, b=3.0)
@@ -158,7 +165,6 @@ class MultiheadSelfAttention(nn.Module):
         if self.rope is not None:
             if token_positions is None:
                 token_positions = torch.arange(seq_len, device=x.device)
-            # Aggiunge una dimensione vuota per allineare le "teste" (broadcasting perfetto)
             pos = token_positions.unsqueeze(-1)
             q = self.rope(q, pos)
             k = self.rope(k, pos)
@@ -231,14 +237,7 @@ class TransformerLM(nn.Module):
 
 def count_params(model: nn.Module) -> int:
     """Conta i parametri addestrabili totali del modello."""
-    total = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
-    # AGGIUNTA: Se i pesi di embedding e output sono condivisi (tied), li contiamo una volta sola
-    if hasattr(model, 'output_head') and hasattr(model, 'tok_embeddings'):
-        if model.output_head.weight is model.tok_embeddings.weight:
-            total -= model.output_head.weight.numel()
-            
-    return total
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def count_flops(config: dict, seq_len: int) -> tuple[int, int]:
@@ -255,15 +254,11 @@ def count_flops(config: dict, seq_len: int) -> tuple[int, int]:
         
     d_ff = config["d_ff"]
     
-    # Parametri per un blocco
     hd = d // n_q
     attn_params = (d * d) + (2 * n_kv * hd * d) + (d * d)
     block_params = attn_params + (3 * d * d_ff)
     
-    # Totale parametri coinvolti in moltiplicazioni matriciali
     matmul_params = (n_layers * block_params) + (V * d)
-    
-    # I FLOPs Forward: nota il 4 moltiplicato per n_layers
     attn_score_flops = 4 * n_layers * L * d
     
     fwd_flops_per_token = (2 * matmul_params) + attn_score_flops
@@ -350,14 +345,11 @@ class AdamW(torch.optim.Optimizer):
                 state["step"] += 1
                 step = state["step"]
 
-                # Decoupled Weight Decay
                 p.mul_(1 - group["lr"] * group["weight_decay"])
 
-                # Exponential moving average
                 exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
                 exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
-                # Bias correction
                 bias_correction1 = 1 - beta1 ** step
                 bias_correction2 = 1 - beta2 ** step
                 
