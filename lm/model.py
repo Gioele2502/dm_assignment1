@@ -2,6 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import numpy as np
+import torch.nn.functional as F
 
 # sezione 4.1
 
@@ -178,13 +179,17 @@ class MultiheadSelfAttention(nn.Module):
         k = k.transpose(-3, -2)
         v = v.transpose(-3, -2)
         
-        if mask is None:
-            causal_mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device))
-            mask = causal_mask.unsqueeze(0).unsqueeze(0)
-            
-        out = scaled_dot_product_attention(q, k, v, mask=mask)
-        out = out.transpose(-3, -2).contiguous().view(*lead, seq_len, -1)
+        # --- VECCHIO CODICE (da commentare o cancellare) ---
+        # if mask is None:
+        #     causal_mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device))
+        #     mask = causal_mask.unsqueeze(0).unsqueeze(0)
+        # out = scaled_dot_product_attention(q, k, v, mask=mask)
         
+        # --- NUOVO CODICE (Libreria Nativa con FlashAttention) ---
+        # is_causal=True applica automaticamente la maschera triangolare a velocità massima
+        out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        
+        out = out.transpose(-3, -2).contiguous().view(*lead, seq_len, -1)
         return self.out_proj(out)
 
 
