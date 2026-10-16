@@ -21,7 +21,7 @@ import torch
 
 from lm.model import (
     TransformerLM,
-    AdamW,
+    #AdamW,
     cross_entropy,
     clip_grad_norm_,
     lr_cosine,
@@ -123,13 +123,31 @@ def main() -> None:
         d_ff=cfg.d_ff,
         rope_theta=cfg.rope_theta
     ).to(device)
-    
+
+    # 1. AGGIUNTA DI TORCH.COMPILE
+    # Compila il modello per fondere i kernel GPU (accelera drasticamente)
+    if device == "cuda":
+        print("Compiling the model with torch.compile...")
+        model = torch.compile(model)
+
+    # 2. ADAMW NATIVO DI PYTORCH CON FUSED=TRUE
+    # Invece di richiamare la tua classe, usiamo torch.optim.AdamW
+    opt = torch.optim.AdamW(
+        model.parameters(), 
+        lr=cfg.lr_max, 
+        betas=(cfg.beta1, cfg.beta2), 
+        weight_decay=cfg.weight_decay,
+        fused=(device == "cuda")  # Abilita l'implementazione "fused" velocissima
+    )
+
+    '''
     opt = AdamW(
         model.parameters(), 
         lr=cfg.lr_max, 
         betas=(cfg.beta1, cfg.beta2), 
         weight_decay=cfg.weight_decay
     )
+    '''
     '''
     n_params = count_params(cfg.vocab_size, cfg.context_length, cfg.d_model, cfg.num_layers, cfg.num_heads, cfg.d_ff)  # noqa: F821
     fwd_flops, train_flops = count_flops(cfg.vocab_size, cfg.context_length, cfg.d_model, cfg.num_layers, cfg.num_heads, cfg.d_ff, cfg.context_length)  # noqa: F821
