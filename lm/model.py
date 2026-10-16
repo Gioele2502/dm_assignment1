@@ -288,17 +288,19 @@ def cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
 
 
 def clip_grad_norm_(parameters, max_norm: float, eps: float = 1e-6) -> torch.Tensor:
-    """Scala i gradienti in modo che la norma L2 globale sia al massimo max_norm."""
+    """Scala i gradienti senza forzare sincronizzazioni CPU-GPU."""
     params = [p for p in parameters if p.grad is not None]
     if not params:
         return torch.tensor(0.0)
-    
+    # Calcola la norma totale (rimane un tensore sulla GPU)
     total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(), 2) for p in params]), 2)
-    clip_coef = max_norm / (float(total_norm) + eps)
-    
-    if clip_coef < 1.0:
-        for p in params:
-            p.grad.detach().mul_(clip_coef)
+    # Calcola il coefficiente interamente come tensore
+    clip_coef = max_norm / (total_norm + eps)
+    # Invece di usare un if (che bloccherebbe la GPU), usiamo torch.clamp
+    # Se clip_coef è > 1.0, viene limitato a 1.0 (cioè i gradienti non vengono toccati)
+    clip_coef_clamped = torch.clamp(clip_coef, max=1.0)
+    for p in params:
+        p.grad.detach().mul_(clip_coef_clamped)
             
     return total_norm
 
