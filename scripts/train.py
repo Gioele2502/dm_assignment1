@@ -111,9 +111,7 @@ def main() -> None:
     train = np.memmap(args.data, dtype=np.uint16, mode="r")
     val = np.memmap(args.val, dtype=np.uint16, mode="r")
 
-    # TODO: build the model and the optimizer with your classes
-    # model = TransformerLM(cfg.vocab_size, cfg.context_length, cfg.d_model, cfg.num_layers, cfg.num_heads, cfg.d_ff, cfg.rope_theta).to(device)
-    # opt = AdamW(model.parameters(), lr=cfg.lr_max, betas=(cfg.beta1, cfg.beta2), weight_decay=cfg.weight_decay)
+    # 1. Crea il modello normale e l'ottimizzatore
     model = TransformerLM(
         vocab_size=cfg.vocab_size,
         context_length=cfg.context_length,
@@ -123,47 +121,34 @@ def main() -> None:
         d_ff=cfg.d_ff,
         rope_theta=cfg.rope_theta
     ).to(device)
-
-    # 1. AGGIUNTA DI TORCH.COMPILE
-    # Compila il modello per fondere i kernel GPU (accelera drasticamente)
-    if device == "cuda":
-        print("Compiling the model with torch.compile...")
-        model = torch.compile(model)
-
-    # 2. ADAMW NATIVO DI PYTORCH CON FUSED=TRUE
-    # Invece di richiamare la tua classe, usiamo torch.optim.AdamW
+    
     opt = torch.optim.AdamW(
         model.parameters(), 
         lr=cfg.lr_max, 
         betas=(cfg.beta1, cfg.beta2), 
         weight_decay=cfg.weight_decay,
-        fused=(device == "cuda")  # Abilita l'implementazione "fused" velocissima
+        fused=(device == "cuda")  # Abilita AdamW fused nativo
     )
 
-    '''
-    opt = AdamW(
-        model.parameters(), 
-        lr=cfg.lr_max, 
-        betas=(cfg.beta1, cfg.beta2), 
-        weight_decay=cfg.weight_decay
-    )
-    '''
-    '''
-    n_params = count_params(cfg.vocab_size, cfg.context_length, cfg.d_model, cfg.num_layers, cfg.num_heads, cfg.d_ff)  # noqa: F821
-    fwd_flops, train_flops = count_flops(cfg.vocab_size, cfg.context_length, cfg.d_model, cfg.num_layers, cfg.num_heads, cfg.d_ff, cfg.context_length)  # noqa: F821
-    '''
     n_params = count_params(model)
     _, train_flops = count_flops(asdict(cfg), cfg.context_length)
     assert n_params == sum(p.numel() for p in model.parameters()), "count_params disagrees with the model"
 
+    # 2. CARICA IL CHECKPOINT PER PRIMO (mentre i nomi dei pesi sono standard)
     start = 0
     ckpt = os.path.join(args.out, "ckpt.pt")
     if args.resume and os.path.exists(ckpt):
         start = load_checkpoint(ckpt, model, opt)  # noqa: F821
         print(f"resumed at step {start}")
 
+    # 3. COMPILA IL MODELLO SOLO DOPO (ora che i pesi sono già stati caricati nei loro posti standard)
+    if device == "cuda":
+        print("Compiling the model with torch.compile...")
+        model = torch.compile(model)
+
     log = open(os.path.join(args.out, "log.jsonl"), "a")
     tokens_per_step = cfg.batch_size * cfg.context_length
+    # ... (il resto del training loop continua invariato)
     warmup = int(cfg.warmup_frac * cfg.steps)
     t0, tok_count = time.time(), 0
     for step in range(start, cfg.steps):
