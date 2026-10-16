@@ -21,7 +21,6 @@ import torch
 
 from lm.model import (
     TransformerLM,
-    #AdamW,
     cross_entropy,
     clip_grad_norm_,
     lr_cosine,
@@ -82,10 +81,9 @@ def evaluate(model, val, cfg: Config, device) -> float:
             break
         x = chunk[:L].view(-1, cfg.context_length)
         y = chunk[1:L + 1].view(-1, cfg.context_length)
-        # TODO: autocast here as in training
         with torch.autocast(device_type=device, dtype=torch.float16, enabled=(device == "cuda")):
             logits = model(x)                               
-        losses.append(cross_entropy(logits.float(), y).item())  # noqa: F821  (your cross_entropy)
+        losses.append(cross_entropy(logits.float(), y).item())
     model.train()
     return float(np.mean(losses))
 
@@ -111,7 +109,7 @@ def main() -> None:
     train = np.memmap(args.data, dtype=np.uint16, mode="r")
     val = np.memmap(args.val, dtype=np.uint16, mode="r")
 
-    # 1. Crea il modello normale e l'ottimizzatore
+    # 1. Crea il modello normale
     model = TransformerLM(
         vocab_size=cfg.vocab_size,
         context_length=cfg.context_length,
@@ -121,7 +119,13 @@ def main() -> None:
         d_ff=cfg.d_ff,
         rope_theta=cfg.rope_theta
     ).to(device)
-    
+
+    # 2. COMPILA IL MODELLO SUBITO (così adotta i nomi con _orig_mod.)
+    if device == "cuda":
+        print("Compiling the model with torch.compile...")
+        model = torch.compile(model)
+
+    # 3. Crea l'ottimizzatore associandolo al modello compilato
     opt = torch.optim.AdamW(
         model.parameters(), 
         lr=cfg.lr_max, 
@@ -134,34 +138,28 @@ def main() -> None:
     _, train_flops = count_flops(asdict(cfg), cfg.context_length)
     assert n_params == sum(p.numel() for p in model.parameters()), "count_params disagrees with the model"
 
-    # 2. CARICA IL CHECKPOINT PER PRIMO (mentre i nomi dei pesi sono standard)
+    # 4. ORA CARICA IL CHECKPOINT (modello e checkpoint ora usano gli stessi nomi)
     start = 0
     ckpt = os.path.join(args.out, "ckpt.pt")
     if args.resume and os.path.exists(ckpt):
-        start = load_checkpoint(ckpt, model, opt)  # noqa: F821
+        start = load_checkpoint(ckpt, model, opt)
         print(f"resumed at step {start}")
-
-    # 3. COMPILA IL MODELLO SOLO DOPO (ora che i pesi sono già stati caricati nei loro posti standard)
-    if device == "cuda":
-        print("Compiling the model with torch.compile...")
-        model = torch.compile(model)
 
     log = open(os.path.join(args.out, "log.jsonl"), "a")
     tokens_per_step = cfg.batch_size * cfg.context_length
-    # ... (il resto del training loop continua invariato)
     warmup = int(cfg.warmup_frac * cfg.steps)
     t0, tok_count = time.time(), 0
     for step in range(start, cfg.steps):
-        lr = lr_cosine(step, cfg.lr_max, cfg.lr_max * cfg.lr_min_frac, warmup, cfg.steps)  # noqa: F821
+        lr = lr_cosine(step, cfg.lr_max, cfg.lr_max * cfg.lr_min_frac, warmup, cfg.steps)
         for g in opt.param_groups:
             g["lr"] = lr
-        x, y = get_batch(train, cfg.batch_size, cfg.context_length, device)  # noqa: F821
+        x, y = get_batch(train, cfg.batch_size, cfg.context_length, device)
         with torch.autocast(device_type=device, dtype=amp_dtype, enabled=(device == "cuda")):
             logits = model(x)
-        loss = cross_entropy(logits.float(), y)  # noqa: F821
+        loss = cross_entropy(logits.float(), y)
         scaler.scale(loss).backward()
         scaler.unscale_(opt)
-        gnorm = clip_grad_norm_(model.parameters(), cfg.grad_clip)  # noqa: F821
+        gnorm = clip_grad_norm_(model.parameters(), cfg.grad_clip)
         scaler.step(opt); scaler.update()
         opt.zero_grad(set_to_none=True)
         tok_count += tokens_per_step
@@ -176,9 +174,9 @@ def main() -> None:
             rec = {"step": step, "val_loss": evaluate(model, val, cfg, device)}
             print(json.dumps(rec)); log.write(json.dumps(rec) + "\n"); log.flush()
         if step % cfg.ckpt_every == 0 and step > start:
-            save_checkpoint(model, opt, step, ckpt)  # noqa: F821
+            save_checkpoint(model, opt, step, ckpt)
 
-    save_checkpoint(model, opt, cfg.steps, ckpt)  # noqa: F821
+    save_checkpoint(model, opt, cfg.steps, ckpt)
     if device == "cuda":
         torch.cuda.synchronize()
     wall = time.time() - t0
