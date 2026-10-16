@@ -369,20 +369,20 @@ def lr_cosine(step: int, lr_max: float, lr_min: float, warmup_steps: int, total_
         return lr_min + 0.5 * (lr_max - lr_min) * (1 + math.cos(math.pi * progress))
     return lr_min
 
-
 def get_batch(data: np.ndarray, batch_size: int, context_length: int, device: str) -> tuple[torch.Tensor, torch.Tensor]:
-    """Campiona finestre casuali per l'addestramento da un array numpy memmap."""
+    """Campiona finestre casuali per l'addestramento in modo vettorizzato."""
     max_start_idx = len(data) - context_length - 1
-    starts = torch.randint(0, max_start_idx + 1, (batch_size,)).tolist()
+    starts = np.random.randint(0, max_start_idx + 1, size=(batch_size, 1))
+    # Creiamo gli offset per l'intera riga (1 x context_length)
+    offsets = np.arange(context_length)
+    # Sfruttiamo il broadcasting di NumPy per ottenere le matrici complete di indici
+    x_indices = starts + offsets
+    y_indices = starts + offsets + 1
+    # Estraiamo i dati tutti in una volta e li convertiamo in tensori
+    x = torch.from_numpy(data[x_indices].astype(np.int64)).to(device)
+    y = torch.from_numpy(data[y_indices].astype(np.int64)).to(device)
     
-    x = torch.empty((batch_size, context_length), dtype=torch.int64)
-    y = torch.empty((batch_size, context_length), dtype=torch.int64)
-    
-    for i, start in enumerate(starts):
-        x[i] = torch.from_numpy(data[start : start + context_length].astype(np.int64))
-        y[i] = torch.from_numpy(data[start + 1 : start + context_length + 1].astype(np.int64))
-        
-    return x.to(device), y.to(device)
+    return x, y
 
 
 def save_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer, step: int, path: str) -> None:
